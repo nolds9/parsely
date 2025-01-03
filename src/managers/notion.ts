@@ -1,6 +1,6 @@
 import { Client } from "@notionhq/client";
 import type { BlockObjectRequest } from "@notionhq/client/build/src/api-endpoints.d.ts";
-import type { APIResponseError } from "@notionhq/client/build/src/errors.d.ts";
+import { isNotionAPIResponseError as isAPIResponseError } from "../utils/notion.js";
 
 interface NotionConfig {
   auth: string;
@@ -16,15 +16,6 @@ interface Recipe {
   cookTime: string | null;
   recipeYield: string | null;
   notes: string | null;
-}
-
-function isAPIResponseError(error: unknown): error is APIResponseError {
-  return (
-    error !== null &&
-    typeof error === "object" &&
-    "code" in error &&
-    "status" in error
-  );
 }
 
 export class NotionRecipeManager {

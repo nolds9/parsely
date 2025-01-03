@@ -9,6 +9,19 @@ import path from "path";
 import { Anthropic } from "@anthropic-ai/sdk";
 import inquirer from "inquirer";
 import { Client } from "@notionhq/client";
+import { isNotionAPIResponseError } from "./utils/notion.js";
+import type { MessageParam } from "@anthropic-ai/sdk/resources/messages/index.js";
+
+interface Recipe {
+  name: string;
+  ingredients: string[];
+  instructions: { text: string }[];
+  cuisineType: string | null;
+  prepTime: string | null;
+  cookTime: string | null;
+  recipeYield: string | null;
+  notes: string | null;
+}
 
 const ConfigSchema = z.object({
   notion: z.object({ auth: z.string(), databaseId: z.string() }),
@@ -80,8 +93,10 @@ class RecipeCLI {
         database_id: this.notionManager!.databaseId,
       });
       spinner.succeed("Database valid");
-    } catch (error) {
-      spinner.fail(`Validation failed: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      spinner.fail(`Validation failed: ${errorMessage}`);
       const shouldSetup = await inquirer.prompt([
         {
           type: "confirm",
@@ -132,8 +147,10 @@ class RecipeCLI {
         },
       });
       spinner.succeed("Database setup complete");
-    } catch (error) {
-      spinner.fail(`Setup failed: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      spinner.fail(`Setup failed: ${errorMessage}`);
       throw error;
     }
   }
@@ -204,8 +221,10 @@ class RecipeCLI {
           spinner.succeed(`Imported ${path.basename(file)}`);
         }
       }
-    } catch (error) {
-      spinner.fail(`Processing failed: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      spinner.fail(`Processing failed: ${errorMessage}`);
     }
   }
 
@@ -218,6 +237,20 @@ class RecipeCLI {
     const prompt = `Analyze ${images.length} recipe images and structure as JSON: { "name": string, "ingredients": string[], "instructions": { "text": string }[], "cuisineType": string | null, "prepTime": string | null, "cookTime": string | null, "recipeYield": string | null, "notes": string | null }`;
 
     try {
+      const textContent = {
+        type: "text",
+        text: prompt,
+      };
+
+      const imageContents = images.map((img) => ({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/jpeg",
+          data: img.base64,
+        },
+      }));
+
       const message = await anthropic.messages.create({
         model:
           options.model === "gpt4"
@@ -227,27 +260,37 @@ class RecipeCLI {
         messages: [
           {
             role: "user",
-            content: [
-              { type: "text", text: prompt },
-              ...images.map((img) => ({
-                type: "image",
-                source: {
-                  type: "base64",
-                  data: img.base64,
-                  media_type: "image/jpeg",
-                },
-              })),
-            ],
+            content: [textContent, ...imageContents] as MessageParam["content"],
           },
         ],
       });
 
-      const jsonMatch = message.content[0].text.match(/\{[\s\S]*\}/);
+      const jsonMatch = message.content
+        .find(
+          (block): block is { type: "text"; text: string } =>
+            block.type === "text"
+        )
+        ?.text.match(/\{[\s\S]*\}/);
+
       if (!jsonMatch) throw new Error("Failed to extract JSON");
       return RecipeSchema.parse(JSON.parse(jsonMatch[0]));
-    } catch (error) {
-      throw new Error(`AI processing failed: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      throw new Error(`AI processing failed: ${errorMessage}`);
     }
+  }
+
+  private async processRecipeImage(
+    base64Image: string,
+    options: { model: string; language: string },
+    config: any
+  ): Promise<Recipe> {
+    return this.processMultipleImages(
+      [{ base64: base64Image, filename: "image.jpg" }],
+      options,
+      config
+    );
   }
 
   private async handleInit() {
@@ -308,19 +351,35 @@ class RecipeCLI {
 
         if (results.length === 0) {
           const pageResponse = await notion.pages.create({
-            parent: { type: "workspace", workspace: true },
+            parent: { page_id: "workspace" },
             properties: {
-              title: [{ type: "text", text: { content: "Recipes" } }],
+              title: {
+                title: [{ type: "text", text: { content: "Recipes" } }],
+              },
             },
           });
           results.push(pageResponse);
         }
 
         const pageChoices = [
-          ...results.map((page) => ({
-            name: page.properties?.title?.title?.[0]?.plain_text || "Untitled",
-            value: page.id,
-          })),
+          ...results.map((page) => {
+            if ("properties" in page && page.properties.title) {
+              const titleProperty = page.properties.title;
+              if ("title" in titleProperty) {
+                return {
+                  name:
+                    Array.isArray(titleProperty.title) && titleProperty.title[0]
+                      ? titleProperty.title[0].plain_text
+                      : "Untitled",
+                  value: page.id,
+                };
+              }
+            }
+            return {
+              name: "Untitled",
+              value: page.id,
+            };
+          }),
           { name: '+ Create new "Recipes" page', value: "new" },
         ];
 
@@ -338,9 +397,11 @@ class RecipeCLI {
         if (parentId === "new") {
           const createSpinner = ora("Creating page").start();
           const pageResponse = await notion.pages.create({
-            parent: { type: "workspace", workspace: true },
+            parent: { page_id: "workspace" },
             properties: {
-              title: [{ type: "text", text: { content: "Recipes" } }],
+              title: {
+                title: [{ type: "text", text: { content: "Recipes" } }],
+              },
             },
           });
           parentId = pageResponse.id;
@@ -381,7 +442,11 @@ class RecipeCLI {
         databaseId = response.id;
         dbSpinner.succeed(`Created database: ${databaseId}`);
       } catch (error) {
-        spinner.fail(`Failed: ${error.message}`);
+        if (isNotionAPIResponseError(error)) {
+          spinner.fail(`Failed: ${error.message}`);
+        } else {
+          spinner.fail(`Failed: ${error}`);
+        }
         process.exit(1);
       }
     }
@@ -487,11 +552,13 @@ class RecipeCLI {
 
     return {
       ...edited,
-      ingredients: edited.ingredients.split("\n").filter((x) => x.trim()),
+      ingredients: edited.ingredients
+        .split("\n")
+        .filter((x: string) => x.trim()),
       instructions: edited.instructions
         .split("\n")
-        .filter((x) => x.trim())
-        .map((text) => ({ text })),
+        .filter((x: string) => x.trim())
+        .map((text: string) => ({ text })),
     };
   }
 
