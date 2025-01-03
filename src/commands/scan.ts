@@ -14,6 +14,26 @@ export interface ScanCommandOptions extends RecipeImportOptions {
   files: string[];
 }
 
+async function processWithRetry<T>(
+  operation: () => Promise<T>,
+  maxRetries = 3
+): Promise<T> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 async function processMultipleImages(
   images: Array<{ base64: string; filename: string }>,
   options: Pick<RecipeImportOptions, "model" | "language">,
@@ -33,19 +53,21 @@ async function processMultipleImages(
       },
     }));
 
-    const message = await anthropic.messages.create({
-      model:
-        options.model === "gpt4"
-          ? "claude-3-opus-20240229"
-          : "claude-3-sonnet-20240229",
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: [textContent, ...imageContents] as MessageParam["content"],
-        },
-      ],
-    });
+    const message = await processWithRetry(() =>
+      anthropic.messages.create({
+        model:
+          options.model === "gpt4"
+            ? "claude-3-opus-20240229"
+            : "claude-3-sonnet-20240229",
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "user",
+            content: [textContent, ...imageContents] as MessageParam["content"],
+          },
+        ],
+      })
+    );
 
     const jsonMatch = message.content
       .find(
@@ -63,12 +85,36 @@ async function processMultipleImages(
   }
 }
 
+function validateImageFile(filename: string): void {
+  const ext = path.extname(filename).toLowerCase();
+  const supportedFormats = [".jpg", ".jpeg", ".png"];
+
+  if (!supportedFormats.includes(ext)) {
+    throw new Error(
+      `Unsupported image format: ${ext}. Supported formats: ${supportedFormats.join(
+        ", "
+      )}`
+    );
+  }
+}
+
+interface ProcessingLog {
+  filename: string;
+  status: "success" | "error";
+  error?: string;
+  notionPageId?: string;
+}
+
 export async function executeScan(
   options: ScanCommandOptions,
   config: Config,
   notionManager: NotionRecipeManager
 ): Promise<void> {
   const spinner = ora("Processing photos").start();
+  let processed = 0;
+  const total = options.files.length;
+
+  const processingLog: ProcessingLog[] = [];
 
   try {
     if (options.model === "gpt4" && !config.ai?.openaiKey) {
@@ -79,12 +125,17 @@ export async function executeScan(
     }
 
     if (options.single) {
+      spinner.text = `Processing ${options.files.length} photos as single recipe`;
+
       const images = await Promise.all(
-        options.files.map(async (file) => ({
-          buffer: await fs.readFile(file),
-          base64: (await fs.readFile(file)).toString("base64"),
-          filename: path.basename(file),
-        }))
+        options.files.map(async (file) => {
+          validateImageFile(file);
+          return {
+            buffer: await fs.readFile(file),
+            base64: (await fs.readFile(file)).toString("base64"),
+            filename: path.basename(file),
+          };
+        })
       );
 
       const recipe = await processMultipleImages(images, options, config);
@@ -103,41 +154,88 @@ export async function executeScan(
           image.filename
         );
       }
+
       spinner.succeed(`Imported recipe with ${options.files.length} photos`);
+      processingLog.push({
+        filename: images.map((img) => img.filename).join(", "),
+        status: "success",
+        notionPageId: pageId,
+      });
     } else {
       for (const file of options.files) {
-        const imageBuffer = await fs.readFile(file);
-        const recipe = await processMultipleImages(
-          [
-            {
-              base64: imageBuffer.toString("base64"),
+        try {
+          processed++;
+          spinner.text = `Processing photo ${processed}/${total}: ${path.basename(
+            file
+          )}`;
+
+          validateImageFile(file);
+          const imageBuffer = await fs.readFile(file);
+          const recipe = await processMultipleImages(
+            [
+              {
+                base64: imageBuffer.toString("base64"),
+                filename: path.basename(file),
+              },
+            ],
+            options,
+            config
+          );
+
+          const finalRecipe = await reviewRecipe(recipe);
+          if (!finalRecipe) {
+            spinner.info(`Skipped ${path.basename(file)}`);
+            processingLog.push({
               filename: path.basename(file),
-            },
-          ],
-          options,
-          config
-        );
+              status: "error",
+              error: "Skipped by user",
+            });
+            continue;
+          }
 
-        const finalRecipe = await reviewRecipe(recipe);
-        if (!finalRecipe) {
-          spinner.info(`Skipped ${path.basename(file)}`);
-          continue;
+          const pageId = await notionManager.createRecipe(finalRecipe);
+          await notionManager.attachPhotoToRecipe(
+            pageId,
+            imageBuffer,
+            path.basename(file)
+          );
+
+          spinner.succeed(`Imported ${path.basename(file)}`);
+          processingLog.push({
+            filename: path.basename(file),
+            status: "success",
+            notionPageId: pageId,
+          });
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          spinner.fail(
+            `Failed to process ${path.basename(file)}: ${errorMessage}`
+          );
+          processingLog.push({
+            filename: path.basename(file),
+            status: "error",
+            error: errorMessage,
+          });
+          // Continue processing other files
         }
-
-        const pageId = await notionManager.createRecipe(finalRecipe);
-        await notionManager.attachPhotoToRecipe(
-          pageId,
-          imageBuffer,
-          path.basename(file)
-        );
-        spinner.succeed(`Imported ${path.basename(file)}`);
       }
     }
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
+    const errorMessage = error instanceof Error ? error.message : String(error);
     spinner.fail(`Processing failed: ${errorMessage}`);
     throw error;
+  } finally {
+    if (processingLog.length > 0) {
+      console.log("\nProcessing Summary:");
+      processingLog.forEach((log) => {
+        if (log.status === "success") {
+          console.log(`✅ ${log.filename} -> ${log.notionPageId}`);
+        } else {
+          console.log(`❌ ${log.filename}: ${log.error}`);
+        }
+      });
+    }
   }
 }
 
@@ -148,11 +246,22 @@ export function registerScanCommand(program: Command): void {
     .option("-m, --model <model>", "AI model (claude/gpt4)", "claude")
     .option("-l, --language <language>", "Source language", "english")
     .option("-s, --single", "Treat multiple photos as single recipe", false)
+    .option("-r, --retries <number>", "Number of retry attempts", "3")
+    .option("--debug", "Enable detailed debug logging", false)
+    .option("--no-spinner", "Disable progress spinner")
     .action(async (files, options) => {
       try {
         const config = await ConfigManager.load();
         const notionManager = new NotionRecipeManager(config.notion);
-        await executeScan({ ...options, files }, config, notionManager);
+        await executeScan(
+          {
+            ...options,
+            files,
+            maxRetries: parseInt(options.retries, 10),
+          },
+          config,
+          notionManager
+        );
       } catch (error) {
         console.error(error);
         process.exit(1);
