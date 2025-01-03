@@ -4,7 +4,7 @@ import fs from "fs/promises";
 import { Recipe } from "../types/recipe.js";
 import { Config } from "../types/config.js";
 import { NotionRecipeManager } from "../managers/notion.js";
-import { loadConfig } from "../utils/config.js";
+import { ConfigManager } from "../managers/config.js";
 
 export interface ServeOptions {
   recipe: string; // Path to recipe JSON file
@@ -77,7 +77,7 @@ export function registerServeCommand(program: Command): void {
     .option("-t, --tags <tags...>", "Tags to apply to the recipe")
     .action(async (recipe, options) => {
       try {
-        const config = await loadConfig();
+        const config = await ConfigManager.load();
         const notionManager = new NotionRecipeManager(config.notion);
         await executeServe(
           {

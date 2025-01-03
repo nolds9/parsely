@@ -8,7 +8,7 @@ import { Recipe, RecipeImportOptions } from "../types/recipe.js";
 import { Config } from "../types/config.js";
 import { NotionRecipeManager } from "../managers/notion.js";
 import { reviewRecipe } from "../utils/prompts.js";
-import { loadConfig } from "../utils/config.js";
+import { ConfigManager } from "../managers/config.js";
 
 export interface ScanCommandOptions extends RecipeImportOptions {
   files: string[];
@@ -150,8 +150,7 @@ export function registerScanCommand(program: Command): void {
     .option("-s, --single", "Treat multiple photos as single recipe", false)
     .action(async (files, options) => {
       try {
-        // These will be initialized in the main CLI
-        const config = await loadConfig();
+        const config = await ConfigManager.load();
         const notionManager = new NotionRecipeManager(config.notion);
         await executeScan({ ...options, files }, config, notionManager);
       } catch (error) {

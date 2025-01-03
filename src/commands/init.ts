@@ -4,7 +4,7 @@ import { Client } from "@notionhq/client";
 import ora from "ora";
 import chalk from "chalk";
 import { Config } from "../types/config.js";
-import { saveConfig } from "../utils/config.js";
+import { ConfigManager } from "../managers/config.js";
 import { isNotionAPIResponseError } from "../utils/notion.js";
 
 async function setupNotionDatabase(auth: string): Promise<string> {
@@ -177,7 +177,7 @@ export async function executeInit(): Promise<void> {
     },
   };
 
-  await saveConfig(config);
+  await ConfigManager.save(config);
   console.log(chalk.green("Configuration saved"));
 }
 

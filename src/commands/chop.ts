@@ -3,7 +3,7 @@ import ora from "ora";
 import { Config } from "../types/config.js";
 import { NotionRecipeManager } from "../managers/notion.js";
 import { reviewRecipe } from "../utils/prompts.js";
-import { loadConfig } from "../utils/config.js";
+import { ConfigManager } from "../managers/config.js";
 import { RecipeSchemaProcessor } from "../utils/schema.js";
 import fs from "fs/promises";
 import inquirer from "inquirer";
@@ -162,7 +162,7 @@ export function registerChopCommand(program: Command): void {
     .option("-t, --tags <tags...>", "Tags to apply to the recipe(s)")
     .action(async (url, options) => {
       try {
-        const config = await loadConfig();
+        const config = await ConfigManager.load();
         const notionManager = new NotionRecipeManager(config.notion);
         await executeChop(
           {
