@@ -11,10 +11,10 @@ Convert the current flat structure into:
 ```
 parsely/
 ├── src/
-│   ├── commands/           # Command implementations
+│   ├── commands/          # Command implementations
 │   │   ├── chop.ts        # Web scraping (NYT, etc.)
 │   │   ├── scan.ts        # Photo processing
-│   │   ├── serve.ts       # Export to Notion
+│   │   └── plate.ts       # Data manipulation
 │   │   └── init.ts        # Configuration
 │   ├── managers/          # Service integrations
 │   │   └── notion.ts      # Notion API wrapper
@@ -63,12 +63,62 @@ export function registerCommand(program: Command): void {
 - Rename commands to match the new CLI vocabulary:
   - `import-photo` → `scan`
   - `import-web` → `chop`
-  - `export` → `serve`
+  - `export` → `plate`
   - Keep `init` as is
 
-### 2. Type Definitions
+### 2. Type Definitions and Schema Handling
 
-Create in `types/recipe.ts`:
+#### Recipe Schema Types
+
+```typescript
+// Using schema-dts for Schema.org type definitions
+import { Recipe as SchemaRecipe, WithContext } from "schema-dts";
+
+// Internal recipe representation
+export interface ParselyRecipe {
+  name: string;
+  ingredients: string[];
+  instructions: Array<{ text: string }>;
+  cuisineType: string | null;
+  prepTime: string | null;
+  cookTime: string | null;
+  recipeYield: string | null;
+  notes: string | null;
+  source?: {
+    url: string;
+    schemaType: string;
+    rawSchema?: Record<string, unknown>;
+  };
+}
+
+// Schema validation and transformation
+export interface SchemaProcessor {
+  validate(schema: unknown): boolean;
+  transform(schema: WithContext<SchemaRecipe>): ParselyRecipe;
+  extractFromHtml(html: string): Array<WithContext<SchemaRecipe>>;
+}
+
+// Error handling
+export class SchemaValidationError extends Error {
+  constructor(
+    message: string,
+    public type: ChopErrorType,
+    public details: Record<string, unknown>
+  ) {
+    super(message);
+  }
+}
+```
+
+#### Schema Processing Features
+
+- Validation against Schema.org/Recipe specification
+- Support for both JSON-LD and microdata formats
+- Extraction of multiple recipes from a single page
+- Detailed validation error reporting
+- Type safety through schema-dts
+- Raw schema preservation for debugging
+  Create in `types/recipe.ts`:
 
 ```typescript
 export interface Recipe {
@@ -119,14 +169,47 @@ export class ConfigManager {
 
 ```typescript
 interface ChopOptions {
-  url: string;
-  tags?: string[];
+  urls: string[]; // Support multiple URLs
+  input?: string; // Optional path to file containing URLs
+  format?: "notion" | "json"; // Default to notion
+  validateOnly?: boolean; // Just validate schema without importing
+  batchSize?: number; // For rate limiting
 }
 
-async function executeChop(options: ChopOptions): Promise<void> {
-  // Web scraping implementation
+interface SchemaValidationResult {
+  url: string;
+  valid: boolean;
+  errors?: string[];
+  rawSchema?: Record<string, unknown>;
+}
+
+interface ChopResult {
+  successful: Array<{ url: string; recipeId: string }>;
+  failed: Array<{ url: string; error: string }>;
+  skipped: Array<{ url: string; reason: string }>;
+}
+
+async function executeChop(options: ChopOptions): Promise<ChopResult> {
+  // Schema.org/Recipe validation and import
+}
+
+// Error types
+enum ChopErrorType {
+  NO_SCHEMA_FOUND = "NO_SCHEMA_FOUND",
+  INVALID_SCHEMA = "INVALID_SCHEMA",
+  FETCH_ERROR = "FETCH_ERROR",
+  RATE_LIMITED = "RATE_LIMITED",
+  PARSING_ERROR = "PARSING_ERROR",
 }
 ```
+
+Command supports:
+
+- Single URL import: `parsely chop https://...`
+- Multiple URLs: `parsely chop url1 url2 url3`
+- Batch from file: `parsely chop --input urls.txt`
+- Validation only: `parsely chop --validate url`
+- Export raw schema: `parsely chop url --format json`
 
 #### Scan Command (Photo Import)
 
@@ -143,19 +226,39 @@ async function executeScan(options: ScanOptions): Promise<void> {
 }
 ```
 
-#### Serve Command (Export)
+#### Plate Command (Schema Export)
 
 ```typescript
-interface ServeOptions {
-  recipe: Recipe;
-  destination: "notion";
-  tags?: string[];
+interface PlateOptions {
+  input: string; // URL or file path
+  format: "json" | "yaml" | "markdown";
+  includeRaw?: boolean; // Include raw schema.org data
+  pretty?: boolean; // Pretty print output
 }
 
-async function executeServe(options: ServeOptions): Promise<void> {
-  // Export implementation
+interface PlateResult {
+  recipe: ParselyRecipe;
+  rawSchema?: Record<string, unknown>;
+  metadata: {
+    source: string;
+    extractedAt: string;
+    schemaType: string;
+  };
 }
+
+// Command supports:
+// parsely plate recipe.json --format markdown
+// parsely plate https://... --format json --include-raw
+// parsely plate recipes/*.json --format yaml
 ```
+
+The `plate` command focuses on schema.org/Recipe data manipulation:
+
+- Extract and validate schema data without importing
+- Convert between different formats
+- Preserve raw schema data for debugging
+- Batch convert multiple recipes
+- Generate formatted output
 
 ## Development Priorities
 
@@ -196,7 +299,7 @@ parsely scan recipe.jpg
 parsely scan --single recipe-p1.jpg recipe-p2.jpg
 
 # Export to notion
-parsely serve recipe.json --to notion
+# Export functionality automatically handled after import
 ```
 
 ## Testing Strategy
@@ -217,6 +320,43 @@ parsely serve recipe.json --to notion
    - Complete user workflows
    - Error scenarios
    - Configuration handling
+
+## Error Handling
+
+### Schema Processing Errors
+
+```typescript
+export class SchemaError extends Error {
+  constructor(
+    public type: ChopErrorType,
+    public url: string,
+    public details: Record<string, unknown>
+  ) {
+    super(getErrorMessage(type, url, details));
+  }
+}
+
+const errorMessages = {
+  [ChopErrorType.NO_SCHEMA_FOUND]: `
+No recipe schema found at {url}
+Tip: Parsely only works with pages that include schema.org/Recipe data.
+Try viewing the page source and looking for "application/ld+json" or "schema.org/Recipe"
+  `,
+  [ChopErrorType.INVALID_SCHEMA]: `
+Invalid recipe schema at {url}
+Details: {details}
+  `,
+  // ... more detailed error messages
+};
+```
+
+### Batch Processing Errors
+
+- Rate limiting handling
+- Retry strategies
+- Progress tracking
+- Detailed error reporting
+- Ability to resume failed batches
 
 ## Additional Features
 
@@ -285,13 +425,13 @@ parsely serve recipe.json --to notion
 ```json
 {
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.33.1",
-    "@notionhq/client": "^2.2.15",
-    "chalk": "^5.4.1",
-    "commander": "^13.0.0",
-    "inquirer": "^12.3.0",
-    "ora": "^8.1.1",
-    "zod": "^3.24.1"
+    "@anthropic-ai/sdk": "^0.17.1",
+    "@notionhq/client": "^2.2.14",
+    "chalk": "^5.3.0",
+    "commander": "^12.0.0",
+    "inquirer": "^9.2.15",
+    "ora": "^8.0.1",
+    "zod": "^3.22.4"
   }
 }
 ```

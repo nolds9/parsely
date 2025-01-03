@@ -1,78 +1,21 @@
 import { Command } from "commander";
 import ora from "ora";
-import { Recipe } from "../types/recipe.js";
 import { Config } from "../types/config.js";
 import { NotionRecipeManager } from "../managers/notion.js";
 import { reviewRecipe } from "../utils/prompts.js";
 import { loadConfig } from "../utils/config.js";
-import { Anthropic } from "@anthropic-ai/sdk";
+import { RecipeSchemaProcessor } from "../utils/schema.js";
+import fs from "fs/promises";
 import inquirer from "inquirer";
 
 export interface ChopOptions {
-  url: string;
+  url?: string;
+  urls?: string[];
+  input?: string;
+  format?: "notion" | "json";
+  validateOnly?: boolean;
+  batchSize?: number;
   tags?: string[];
-}
-
-async function scrapeRecipe(url: string, config: Config): Promise<Recipe> {
-  const spinner = ora("Fetching recipe").start();
-
-  try {
-    // First fetch the webpage content
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch URL: ${response.statusText}`);
-    }
-    const html = await response.text();
-
-    // Use Claude to extract recipe information
-    const anthropic = new Anthropic({ apiKey: config.ai.anthropicKey });
-
-    const prompt = `Extract recipe information from this webpage HTML and format as JSON matching this type:
-    {
-      name: string;
-      ingredients: string[];
-      instructions: Array<{ text: string }>;
-      cuisineType: string | null;
-      prepTime: string | null;
-      cookTime: string | null;
-      recipeYield: string | null;
-      notes: string | null;
-    }
-    
-    HTML content:
-    ${html}`;
-
-    spinner.text = "Analyzing recipe";
-
-    const message = await anthropic.messages.create({
-      model: "claude-3-sonnet-20240229",
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-    });
-
-    const jsonMatch = message.content
-      .find(
-        (block): block is { type: "text"; text: string } =>
-          block.type === "text"
-      )
-      ?.text.match(/\{[\s\S]*\}/);
-
-    if (!jsonMatch) {
-      throw new Error("Failed to extract recipe information");
-    }
-
-    const recipe = JSON.parse(jsonMatch[0]) as Recipe;
-    spinner.succeed("Recipe extracted");
-    return recipe;
-  } catch (error) {
-    spinner.fail("Failed to extract recipe");
-    throw error;
-  }
 }
 
 export async function executeChop(
@@ -80,59 +23,159 @@ export async function executeChop(
   config: Config,
   notionManager: NotionRecipeManager
 ): Promise<void> {
-  try {
-    // Check if recipe already exists
-    const existingId = await notionManager.findRecipeByUrl(options.url);
-    if (existingId) {
-      const { update } = await inquirer.prompt([
-        {
-          type: "confirm",
-          name: "update",
-          message: "Recipe already exists. Update it?",
-          default: false,
-        },
-      ]);
+  const spinner = ora("Processing recipes").start();
+  const schemaProcessor = new RecipeSchemaProcessor();
+  const results = {
+    successful: [] as Array<{ url: string; recipeId: string }>,
+    failed: [] as Array<{ url: string; error: string }>,
+    skipped: [] as Array<{ url: string; reason: string }>,
+  };
 
-      if (!update) {
-        console.log("Skipping import");
-        return;
+  try {
+    // Determine URLs to process
+    let urls: string[] = [];
+    if (options.input) {
+      const content = await fs.readFile(options.input, "utf-8");
+      urls = content
+        .split("\n")
+        .filter(Boolean)
+        .map((url) => url.trim());
+    } else if (options.urls) {
+      urls = options.urls;
+    } else if (options.url) {
+      urls = [options.url];
+    } else {
+      throw new Error("No URLs provided");
+    }
+
+    // Process URLs in batches
+    const batchSize = options.batchSize || 5;
+    for (let i = 0; i < urls.length; i += batchSize) {
+      const batch = urls.slice(i, i + batchSize);
+      spinner.text = `Processing batch ${
+        Math.floor(i / batchSize) + 1
+      }/${Math.ceil(urls.length / batchSize)}`;
+
+      await Promise.all(
+        batch.map(async (url) => {
+          try {
+            // Check if recipe already exists
+            const existingId = await notionManager.findRecipeByUrl(url);
+            if (existingId) {
+              const { update } = await inquirer.prompt([
+                {
+                  type: "confirm",
+                  name: "update",
+                  message: `Recipe from ${url} already exists. Update it?`,
+                  default: false,
+                },
+              ]);
+
+              if (!update) {
+                results.skipped.push({
+                  url,
+                  reason: "Recipe already exists",
+                });
+                return;
+              }
+            }
+
+            // Fetch and process recipe
+            const response = await fetch(url);
+            if (!response.ok) {
+              throw new Error(`Failed to fetch URL: ${response.statusText}`);
+            }
+            const html = await response.text();
+            const schemas = schemaProcessor.extractFromHtml(html);
+
+            if (options.validateOnly) {
+              results.successful.push({ url, recipeId: "validated" });
+              return;
+            }
+
+            // Transform recipe
+            const recipe = schemaProcessor.transform(schemas[0]);
+
+            // Allow user review for single recipes
+            const finalRecipe =
+              urls.length === 1 ? await reviewRecipe(recipe) : recipe;
+
+            if (!finalRecipe) {
+              results.skipped.push({
+                url,
+                reason: "User cancelled",
+              });
+              return;
+            }
+
+            // Save to Notion
+            if (existingId) {
+              await notionManager.updateRecipe(existingId, finalRecipe);
+              results.successful.push({ url, recipeId: existingId });
+            } else {
+              const pageId = await notionManager.createRecipe(finalRecipe);
+              results.successful.push({ url, recipeId: pageId });
+            }
+          } catch (error) {
+            results.failed.push({
+              url,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        })
+      );
+
+      // Add delay between batches if more to process
+      if (i + batchSize < urls.length) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
 
-    // Scrape and process the recipe
-    const recipe = await scrapeRecipe(options.url, config);
+    spinner.succeed("Processing complete");
 
-    // Let user review and edit
-    const finalRecipe = await reviewRecipe(recipe);
-    if (!finalRecipe) {
-      console.log("Import cancelled");
-      return;
-    }
+    // Print results
+    console.log("\nResults:");
+    console.log(`✅ Successful: ${results.successful.length}`);
+    console.log(`❌ Failed: ${results.failed.length}`);
+    console.log(`⏭️  Skipped: ${results.skipped.length}`);
 
-    // Save to Notion
-    if (existingId) {
-      await notionManager.updateRecipe(existingId, finalRecipe);
-      console.log("Recipe updated successfully");
-    } else {
-      await notionManager.createRecipe(finalRecipe);
-      console.log("Recipe imported successfully");
+    if (results.failed.length > 0) {
+      console.log("\nFailed URLs:");
+      results.failed.forEach(({ url, error }) => {
+        console.log(`${url}: ${error}`);
+      });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    throw new Error(`Failed to import recipe: ${message}`);
+    spinner.fail("Processing failed");
+    throw error;
   }
 }
 
 export function registerChopCommand(program: Command): void {
   program
-    .command("chop <url>")
-    .description("Import recipe from a webpage")
-    .option("-t, --tags <tags...>", "Tags to apply to the recipe")
+    .command("chop [url]")
+    .description("Import recipe(s) from webpage(s)")
+    .option("-i, --input <file>", "File containing URLs to process")
+    .option("-f, --format <format>", "Output format (notion/json)", "notion")
+    .option("-v, --validate-only", "Only validate schema without importing")
+    .option("-b, --batch-size <size>", "Number of URLs to process at once", "5")
+    .option("-t, --tags <tags...>", "Tags to apply to the recipe(s)")
     .action(async (url, options) => {
       try {
         const config = await loadConfig();
         const notionManager = new NotionRecipeManager(config.notion);
-        await executeChop({ url, tags: options.tags }, config, notionManager);
+        await executeChop(
+          {
+            url,
+            input: options.input,
+            format: options.format,
+            validateOnly: options.validateOnly,
+            batchSize: parseInt(options.batchSize),
+            tags: options.tags,
+          },
+          config,
+          notionManager
+        );
       } catch (error) {
         console.error(error);
         process.exit(1);

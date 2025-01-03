@@ -28,8 +28,28 @@ Import a recipe from a photo:
 parsely scan recipe.jpg
 ```
 
-Export to Notion:
+## Commands
 
-```bash
-parsely serve recipe.json --to notion
-```
+Import a recipe or recipes from a url, multiple urls, or from a file.
+
+### Chop
+
+#### Single URL
+
+`parsely chop https://example.com/recipe`
+
+#### Multiple URLs from file
+
+`parsely chop --input recipes.txt`
+
+#### Validate only
+
+`parsely chop --validate-only https://example.com/recipe`
+
+#### Batch processing with custom size
+
+`parsely chop --input recipes.txt --batch-size 10`
+
+#### With tags
+
+`parsely chop https://example.com/recipe --tags "dinner" "quick"`
