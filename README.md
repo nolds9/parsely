@@ -30,26 +30,18 @@ parsely scan recipe.jpg
 
 ## Commands
 
-Import a recipe or recipes from a url, multiple urls, or from a file.
-
 ### Chop
 
-#### Single URL
+See docs in [docs/chop-command.md](docs/chop-command.md)
 
-`parsely chop https://example.com/recipe`
+### Scan
 
-#### Multiple URLs from file
+See docs in [docs/scan-command.md](docs/scan-command.md)
 
-`parsely chop --input recipes.txt`
+### Plate
 
-#### Validate only
+See docs in [docs/plate-command.md](docs/plate-command.md)
 
-`parsely chop --validate-only https://example.com/recipe`
+### Init
 
-#### Batch processing with custom size
-
-`parsely chop --input recipes.txt --batch-size 10`
-
-#### With tags
-
-`parsely chop https://example.com/recipe --tags "dinner" "quick"`
+See docs in [docs/init-command.md](docs/init-command.md)
