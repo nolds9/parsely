@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { registerScanCommand } from "./commands/scan.js";
 import { registerInitCommand } from "./commands/init.js";
 import { registerChopCommand } from "./commands/chop.js";
-import { registerServeCommand } from "./commands/serve.js";
+import { registerPlateCommand } from "./commands/plate.js";
 
 async function main() {
   const program = new Command()
@@ -15,7 +15,7 @@ async function main() {
   registerInitCommand(program);
   registerScanCommand(program);
   registerChopCommand(program);
-  registerServeCommand(program);
+  registerPlateCommand(program);
 
   await program.parseAsync(process.argv);
 }
