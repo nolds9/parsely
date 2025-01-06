@@ -177,6 +177,33 @@ export async function executeChop(
               const pageId = await notionManager.createRecipe(finalRecipe);
               results.successful.push({ url, recipeId: pageId });
             }
+
+            console.log("\nExtracted Recipe:");
+            console.log(`Name: ${recipe.name}`);
+            console.log(`Description: ${recipe.description || "None"}`);
+            console.log(`URL: ${recipe.url || recipe.source?.url || "None"}`);
+            console.log(`Cuisine: ${recipe.cuisineType || "None"}`);
+            console.log(`Category: ${recipe.category || "None"}`);
+            console.log(`Keywords: ${recipe.keywords?.join(", ") || "None"}`);
+            console.log(`Prep Time: ${recipe.prepTime || "None"}`);
+            console.log(`Cook Time: ${recipe.cookTime || "None"}`);
+            console.log(`Total Time: ${recipe.totalTime || "None"}`);
+            console.log(`Servings: ${recipe.recipeYield || "None"}`);
+
+            console.log("\nIngredients:");
+            recipe.ingredients.forEach((ingredient, i) => {
+              console.log(`${i + 1}. ${ingredient}`);
+            });
+
+            console.log("\nInstructions:");
+            recipe.instructions.forEach((instruction, i) => {
+              console.log(`${i + 1}. ${instruction.text}`);
+            });
+
+            if (recipe.notes) {
+              console.log("\nNotes:");
+              console.log(recipe.notes);
+            }
           } catch (error) {
             results.failed.push({
               url,

@@ -7,6 +7,30 @@ import { Config } from "../types/config.js";
 import { ConfigManager } from "../managers/config.js";
 import { isNotionAPIResponseError } from "../utils/notion.js";
 
+// Add types for Notion formats
+type NotionColor =
+  | "blue"
+  | "red"
+  | "purple"
+  | "green"
+  | "yellow"
+  | "orange"
+  | "brown"
+  | "gray"
+  | "pink";
+type NumberFormat =
+  | "number"
+  | "number_with_commas"
+  | "percent"
+  | "dollar"
+  | "euro"
+  | "pound"
+  | "yen"
+  | "ruble"
+  | "rupee"
+  | "won"
+  | "yuan";
+
 async function setupNotionDatabase(
   auth: string,
   specifiedPageId?: string
@@ -18,34 +42,45 @@ async function setupNotionDatabase(
     // If a specific page ID is provided, use it directly
     if (specifiedPageId) {
       const dbSpinner = ora("Creating database").start();
+      const databaseProperties = {
+        Name: { title: {} },
+        URL: { url: {} },
+        "Cuisine Type": {
+          select: {
+            options: [
+              { name: "Italian", color: "blue" as NotionColor },
+              { name: "Chinese", color: "red" as NotionColor },
+              { name: "Japanese", color: "purple" as NotionColor },
+              { name: "French", color: "green" as NotionColor },
+              { name: "American", color: "yellow" as NotionColor },
+            ],
+          },
+        },
+        Tags: {
+          multi_select: {
+            options: [
+              { name: "Dinner", color: "yellow" as NotionColor },
+              { name: "Quick", color: "green" as NotionColor },
+              { name: "Vegetarian", color: "orange" as NotionColor },
+              { name: "Breakfast", color: "blue" as NotionColor },
+              { name: "Lunch", color: "red" as NotionColor },
+            ],
+          },
+        },
+        "Prep Time": { number: { format: "number" as NumberFormat } },
+        "Cook Time": { number: { format: "number" as NumberFormat } },
+        "Total Time": { rich_text: {} },
+        Servings: { rich_text: {} },
+        Notes: { rich_text: {} },
+        Description: { rich_text: {} },
+        Keywords: { multi_select: {} },
+        Category: { select: {} },
+        Type: { select: {} },
+      };
       const response = await notion.databases.create({
         parent: { type: "page_id", page_id: specifiedPageId },
         title: [{ type: "text", text: { content: "Recipe Database" } }],
-        properties: {
-          Name: { title: {} },
-          URL: { url: {} },
-          "Cuisine Type": {
-            select: {
-              options: [
-                { name: "Italian", color: "blue" },
-                { name: "Chinese", color: "red" },
-                { name: "Japanese", color: "purple" },
-              ],
-            },
-          },
-          Tags: {
-            multi_select: {
-              options: [
-                { name: "Dinner", color: "yellow" },
-                { name: "Quick", color: "green" },
-                { name: "Vegetarian", color: "orange" },
-              ],
-            },
-          },
-          "Prep Time": { number: {} },
-          "Cook Time": { number: {} },
-          Servings: { rich_text: {} },
-        },
+        properties: databaseProperties,
       });
       dbSpinner.succeed(`Created database: ${response.id}`);
       return response.id;
@@ -103,34 +138,45 @@ async function setupNotionDatabase(
     ]);
 
     const dbSpinner = ora("Creating database").start();
+    const databaseProperties = {
+      Name: { title: {} },
+      URL: { url: {} },
+      "Cuisine Type": {
+        select: {
+          options: [
+            { name: "Italian", color: "blue" as NotionColor },
+            { name: "Chinese", color: "red" as NotionColor },
+            { name: "Japanese", color: "purple" as NotionColor },
+            { name: "French", color: "green" as NotionColor },
+            { name: "American", color: "yellow" as NotionColor },
+          ],
+        },
+      },
+      Tags: {
+        multi_select: {
+          options: [
+            { name: "Dinner", color: "yellow" as NotionColor },
+            { name: "Quick", color: "green" as NotionColor },
+            { name: "Vegetarian", color: "orange" as NotionColor },
+            { name: "Breakfast", color: "blue" as NotionColor },
+            { name: "Lunch", color: "red" as NotionColor },
+          ],
+        },
+      },
+      "Prep Time": { number: { format: "number" as NumberFormat } },
+      "Cook Time": { number: { format: "number" as NumberFormat } },
+      "Total Time": { rich_text: {} },
+      Servings: { rich_text: {} },
+      Notes: { rich_text: {} },
+      Description: { rich_text: {} },
+      Keywords: { multi_select: {} },
+      Category: { select: {} },
+      Type: { select: {} },
+    };
     const response = await notion.databases.create({
       parent: { type: "page_id", page_id: pageAnswer.parentId },
       title: [{ type: "text", text: { content: "Recipe Database" } }],
-      properties: {
-        Name: { title: {} },
-        URL: { url: {} },
-        "Cuisine Type": {
-          select: {
-            options: [
-              { name: "Italian", color: "blue" },
-              { name: "Chinese", color: "red" },
-              { name: "Japanese", color: "purple" },
-            ],
-          },
-        },
-        Tags: {
-          multi_select: {
-            options: [
-              { name: "Dinner", color: "yellow" },
-              { name: "Quick", color: "green" },
-              { name: "Vegetarian", color: "orange" },
-            ],
-          },
-        },
-        "Prep Time": { number: {} },
-        "Cook Time": { number: {} },
-        Servings: { rich_text: {} },
-      },
+      properties: databaseProperties,
     });
 
     dbSpinner.succeed(`Created database: ${response.id}`);

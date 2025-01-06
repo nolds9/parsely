@@ -1,24 +1,32 @@
 import { Recipe as SchemaRecipe, Thing, WithContext } from "schema-dts";
 import { JSDOM } from "jsdom";
 import {
-  ParselyRecipe,
   SchemaProcessor,
   SchemaErrorType,
   SchemaValidationError,
 } from "../types/schema.js";
+import { Recipe } from "../types/recipe.js";
 
+/**
+ * Intermediate type for parsing raw Schema.org recipe data.
+ * This type reflects the structure of raw data we might receive,
+ * before it's transformed into our internal Recipe type.
+ */
 type RecipeData = {
-  "@type": string | string[];
-  name?: string | string[];
-  recipeIngredient?: string | string[];
-  recipeInstructions?: string | string[] | Array<{ text: string }>;
-  recipeCuisine?: string | string[];
-  prepTime?: string | string[];
-  cookTime?: string | string[];
-  recipeYield?: string | string[];
-  url?: string;
-  description?: string | string[];
-  author?: string | string[];
+  "@type": string | string[]; // Schema.org type identifier
+  name?: string | string[]; // Raw recipe name
+  recipeIngredient?: string | string[]; // Raw ingredients list
+  recipeInstructions?: string | string[] | Array<{ text: string }>; // Raw instructions
+  recipeCuisine?: string | string[]; // Raw cuisine type
+  prepTime?: string | string[]; // Raw prep time
+  cookTime?: string | string[]; // Raw cook time
+  totalTime?: string | string[]; // Raw total time
+  recipeYield?: string | string[]; // Raw yield/servings
+  url?: string; // Recipe URL
+  description?: string | string[]; // Raw description
+  recipeCategory?: string | string[]; // Raw category
+  keywords?: string | string[]; // Raw keywords
+  author?: string | string[]; // Raw author info
 };
 
 const DEBUG = process.env.DEBUG === "true";
@@ -35,7 +43,7 @@ export class RecipeSchemaProcessor implements SchemaProcessor {
     return true;
   }
 
-  transform(schema: WithContext<SchemaRecipe>): ParselyRecipe {
+  transform(schema: WithContext<SchemaRecipe>): Recipe {
     if (!this.validate(schema)) {
       throw new SchemaValidationError(
         "Invalid recipe schema",
@@ -54,8 +62,13 @@ export class RecipeSchemaProcessor implements SchemaProcessor {
       cuisineType: this.extractText(recipeData.recipeCuisine),
       prepTime: this.extractText(recipeData.prepTime),
       cookTime: this.extractText(recipeData.cookTime),
+      totalTime: this.extractText(recipeData.totalTime),
       recipeYield: this.extractText(recipeData.recipeYield),
       notes: null,
+      description: this.extractText(recipeData.description),
+      category: this.extractText(recipeData.recipeCategory),
+      keywords: this.extractKeywords(recipeData.keywords),
+      url: typeof recipeData.url === "string" ? recipeData.url : "",
       source: {
         url: typeof recipeData.url === "string" ? recipeData.url : "",
         schemaType: Array.isArray(recipeData["@type"])
@@ -231,5 +244,13 @@ export class RecipeSchemaProcessor implements SchemaProcessor {
     }
 
     return score;
+  }
+
+  private extractKeywords(value: string | string[] | undefined): string[] {
+    if (!value) return [];
+    if (typeof value === "string") {
+      return value.split(/,\s*/);
+    }
+    return Array.isArray(value) ? value : [];
   }
 }

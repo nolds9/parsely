@@ -3,9 +3,8 @@ import ora from "ora";
 import fs from "fs/promises";
 import path from "path";
 import YAML from "yaml";
-import { ParselyRecipe } from "../types/schema.js";
 import { RecipeSchemaProcessor } from "../utils/schema.js";
-
+import { Recipe } from "../types/recipe.js";
 export interface PlateOptions {
   input: string;
   format: "json" | "yaml" | "markdown";
@@ -14,7 +13,7 @@ export interface PlateOptions {
 }
 
 export interface PlateResult {
-  recipe: ParselyRecipe;
+  recipe: Recipe;
   rawSchema?: Record<string, unknown>;
   metadata: {
     source: string;
@@ -23,9 +22,9 @@ export interface PlateResult {
   };
 }
 
-async function loadRecipeFile(filePath: string): Promise<ParselyRecipe> {
+async function loadRecipeFile(filePath: string): Promise<Recipe> {
   const content = await fs.readFile(filePath, "utf-8");
-  return JSON.parse(content) as ParselyRecipe;
+  return JSON.parse(content) as Recipe;
 }
 
 function formatRecipe(
@@ -65,7 +64,7 @@ export async function executePlate(options: PlateOptions): Promise<void> {
   const schemaProcessor = new RecipeSchemaProcessor();
 
   try {
-    let recipe: ParselyRecipe;
+    let recipe: Recipe;
     let rawSchema: Record<string, unknown> | undefined;
 
     // Handle URL or file input

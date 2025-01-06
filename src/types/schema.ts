@@ -1,20 +1,5 @@
 import { Recipe as SchemaRecipe, WithContext } from "schema-dts";
-
-export interface ParselyRecipe {
-  name: string;
-  ingredients: string[];
-  instructions: Array<{ text: string }>;
-  cuisineType: string | null;
-  prepTime: string | null;
-  cookTime: string | null;
-  recipeYield: string | null;
-  notes: string | null;
-  source?: {
-    url: string;
-    schemaType: string;
-    rawSchema?: Record<string, unknown>;
-  };
-}
+import { Recipe } from "./recipe.js";
 
 export enum SchemaErrorType {
   NO_SCHEMA_FOUND = "NO_SCHEMA_FOUND",
@@ -37,6 +22,6 @@ export class SchemaValidationError extends Error {
 
 export interface SchemaProcessor {
   validate(schema: unknown): boolean;
-  transform(schema: WithContext<SchemaRecipe>): ParselyRecipe;
+  transform(schema: WithContext<SchemaRecipe>): Recipe;
   extractFromHtml(html: string): Array<WithContext<SchemaRecipe>>;
 }

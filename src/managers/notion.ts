@@ -1,21 +1,11 @@
 import { Client } from "@notionhq/client";
 import type { BlockObjectRequest } from "@notionhq/client/build/src/api-endpoints.d.ts";
 import { isNotionAPIResponseError as isAPIResponseError } from "../utils/notion.js";
+import { Recipe } from "../types/recipe.js";
 
 interface NotionConfig {
   auth: string;
   databaseId: string;
-}
-
-interface Recipe {
-  name: string;
-  ingredients: string[];
-  instructions: { text: string }[];
-  cuisineType: string | null;
-  prepTime: string | null;
-  cookTime: string | null;
-  recipeYield: string | null;
-  notes: string | null;
 }
 
 export class NotionRecipeManager {
@@ -39,13 +29,29 @@ export class NotionRecipeManager {
             select: recipe.cuisineType ? { name: recipe.cuisineType } : null,
           },
           "Prep Time": {
-            number: recipe.prepTime ? parseInt(recipe.prepTime) : null,
+            number: recipe.prepTime
+              ? this.parseTimeToMinutes(recipe.prepTime)
+              : null,
           },
           "Cook Time": {
-            number: recipe.cookTime ? parseInt(recipe.cookTime) : null,
+            number: recipe.cookTime
+              ? this.parseTimeToMinutes(recipe.cookTime)
+              : null,
           },
           Servings: {
             rich_text: [{ text: { content: recipe.recipeYield || "" } }],
+          },
+          URL: {
+            url: recipe.url || recipe.source?.url || "",
+          },
+          Notes: {
+            rich_text: [
+              {
+                text: {
+                  content: this.formatAdditionalInfo(recipe),
+                },
+              },
+            ],
           },
         },
         children: [
@@ -99,6 +105,17 @@ export class NotionRecipeManager {
                 } as BlockObjectRequest,
               ]
             : []),
+          ...(recipe.description
+            ? [
+                {
+                  object: "block" as const,
+                  type: "paragraph" as const,
+                  paragraph: {
+                    rich_text: [{ text: { content: recipe.description } }],
+                  },
+                } as BlockObjectRequest,
+              ]
+            : []),
         ],
       });
 
@@ -113,7 +130,6 @@ export class NotionRecipeManager {
 
   async updateRecipe(pageId: string, recipe: Recipe): Promise<void> {
     try {
-      // First update the properties
       await this.notion.pages.update({
         page_id: pageId,
         properties: {
@@ -124,18 +140,33 @@ export class NotionRecipeManager {
             select: recipe.cuisineType ? { name: recipe.cuisineType } : null,
           },
           "Prep Time": {
-            number: recipe.prepTime ? parseInt(recipe.prepTime) : null,
+            number: recipe.prepTime
+              ? this.parseTimeToMinutes(recipe.prepTime)
+              : null,
           },
           "Cook Time": {
-            number: recipe.cookTime ? parseInt(recipe.cookTime) : null,
+            number: recipe.cookTime
+              ? this.parseTimeToMinutes(recipe.cookTime)
+              : null,
           },
           Servings: {
             rich_text: [{ text: { content: recipe.recipeYield || "" } }],
           },
+          URL: {
+            url: recipe.url || recipe.source?.url || "",
+          },
+          Notes: {
+            rich_text: [
+              {
+                text: {
+                  content: this.formatAdditionalInfo(recipe),
+                },
+              },
+            ],
+          },
         },
       });
 
-      // Then delete existing content blocks
       const { results } = await this.notion.blocks.children.list({
         block_id: pageId,
       });
@@ -146,7 +177,6 @@ export class NotionRecipeManager {
         });
       }
 
-      // Finally add new content blocks
       await this.notion.blocks.children.append({
         block_id: pageId,
         children: [
@@ -196,6 +226,17 @@ export class NotionRecipeManager {
                   type: "paragraph" as const,
                   paragraph: {
                     rich_text: [{ text: { content: recipe.notes } }],
+                  },
+                } as BlockObjectRequest,
+              ]
+            : []),
+          ...(recipe.description
+            ? [
+                {
+                  object: "block" as const,
+                  type: "paragraph" as const,
+                  paragraph: {
+                    rich_text: [{ text: { content: recipe.description } }],
                   },
                 } as BlockObjectRequest,
               ]
@@ -282,5 +323,51 @@ export class NotionRecipeManager {
       default:
         return "image/jpeg"; // default to jpeg
     }
+  }
+
+  private parseTimeToMinutes(timeStr: string): number | null {
+    try {
+      // Handle ISO duration format (PT1H30M)
+      if (timeStr.startsWith("PT")) {
+        const hours = timeStr.match(/(\d+)H/)?.[1] || "0";
+        const minutes = timeStr.match(/(\d+)M/)?.[1] || "0";
+        return parseInt(hours) * 60 + parseInt(minutes);
+      }
+
+      // Handle simple minute strings
+      if (timeStr.toLowerCase().includes("min")) {
+        return parseInt(timeStr);
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private formatAdditionalInfo(recipe: Recipe): string {
+    const parts: string[] = [];
+
+    if (recipe.totalTime) {
+      parts.push(`Total Time: ${recipe.totalTime}`);
+    }
+
+    if (recipe.category) {
+      parts.push(`Category: ${recipe.category}`);
+    }
+
+    if (recipe.keywords?.length) {
+      parts.push(`Keywords: ${recipe.keywords.join(", ")}`);
+    }
+
+    if (recipe.description) {
+      parts.push(`\nDescription: ${recipe.description}`);
+    }
+
+    if (recipe.notes) {
+      parts.push(`\nNotes: ${recipe.notes}`);
+    }
+
+    return parts.join("\n");
   }
 }
