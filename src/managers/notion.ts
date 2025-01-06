@@ -1,6 +1,10 @@
 import { Client } from "@notionhq/client";
 import type { BlockObjectRequest } from "@notionhq/client/build/src/api-endpoints.d.ts";
-import { isNotionAPIResponseError as isAPIResponseError } from "../utils/notion.js";
+import {
+  isNotionAPIResponseError as isAPIResponseError,
+  retry,
+  wait,
+} from "../utils/notion.js";
 import { Recipe } from "../types/recipe.js";
 
 interface NotionConfig {
@@ -38,6 +42,9 @@ export class NotionRecipeManager {
               ? this.parseTimeToMinutes(recipe.cookTime)
               : null,
           },
+          "Total Time": {
+            rich_text: [{ text: { content: recipe.totalTime || "" } }],
+          },
           Servings: {
             rich_text: [{ text: { content: recipe.recipeYield || "" } }],
           },
@@ -52,6 +59,16 @@ export class NotionRecipeManager {
                 },
               },
             ],
+          },
+          Description: {
+            rich_text: [{ text: { content: recipe.description || "" } }],
+          },
+          Keywords: {
+            multi_select:
+              recipe.keywords?.map((keyword) => ({ name: keyword })) || [],
+          },
+          Category: {
+            select: recipe.category ? { name: recipe.category } : null,
           },
         },
         children: [
@@ -129,125 +146,203 @@ export class NotionRecipeManager {
   }
 
   async updateRecipe(pageId: string, recipe: Recipe): Promise<void> {
+    const debug = process.env.DEBUG === "true";
+    const log = (message: string) => {
+      if (debug) console.log(`[Notion Update] ${message}`);
+    };
+
     try {
-      await this.notion.pages.update({
-        page_id: pageId,
-        properties: {
-          Name: {
-            title: [{ text: { content: recipe.name } }],
-          },
-          "Cuisine Type": {
-            select: recipe.cuisineType ? { name: recipe.cuisineType } : null,
-          },
-          "Prep Time": {
-            number: recipe.prepTime
-              ? this.parseTimeToMinutes(recipe.prepTime)
-              : null,
-          },
-          "Cook Time": {
-            number: recipe.cookTime
-              ? this.parseTimeToMinutes(recipe.cookTime)
-              : null,
-          },
-          Servings: {
-            rich_text: [{ text: { content: recipe.recipeYield || "" } }],
-          },
-          URL: {
-            url: recipe.url || recipe.source?.url || "",
-          },
-          Notes: {
-            rich_text: [
-              {
-                text: {
-                  content: this.formatAdditionalInfo(recipe),
+      // Step 1: Update properties
+      log("Updating page properties...");
+      await retry(() =>
+        this.notion.pages.update({
+          page_id: pageId,
+          properties: {
+            Name: {
+              title: [{ text: { content: recipe.name } }],
+            },
+            "Cuisine Type": {
+              select: recipe.cuisineType ? { name: recipe.cuisineType } : null,
+            },
+            "Prep Time": {
+              number: recipe.prepTime
+                ? this.parseTimeToMinutes(recipe.prepTime)
+                : null,
+            },
+            "Cook Time": {
+              number: recipe.cookTime
+                ? this.parseTimeToMinutes(recipe.cookTime)
+                : null,
+            },
+            "Total Time": {
+              rich_text: [{ text: { content: recipe.totalTime || "" } }],
+            },
+            Servings: {
+              rich_text: [{ text: { content: recipe.recipeYield || "" } }],
+            },
+            URL: {
+              url: recipe.url || recipe.source?.url || "",
+            },
+            Notes: {
+              rich_text: [
+                {
+                  text: {
+                    content: this.formatAdditionalInfo(recipe),
+                  },
                 },
-              },
-            ],
+              ],
+            },
+            Description: {
+              rich_text: [{ text: { content: recipe.description || "" } }],
+            },
+            Keywords: {
+              multi_select: [
+                ...(recipe.keywords?.map((keyword) => ({
+                  name: keyword.trim(),
+                })) || []),
+                ...(recipe.category
+                  ? recipe.category
+                      .split(",")
+                      .slice(1)
+                      .map((cat) => ({ name: cat.trim() }))
+                  : []),
+              ],
+            },
+            Category: {
+              select: recipe.category
+                ? { name: recipe.category.split(",")[0].trim() }
+                : null,
+            },
           },
-        },
-      });
+        })
+      );
+      log("✓ Properties updated");
 
-      const { results } = await this.notion.blocks.children.list({
-        block_id: pageId,
-      });
+      // Step 2: Get existing blocks
+      log("Fetching existing blocks...");
+      let allBlocks = [];
+      let cursor = undefined;
+      do {
+        const { results, next_cursor } = await this.notion.blocks.children.list(
+          {
+            block_id: pageId,
+            start_cursor: cursor,
+            page_size: 100,
+          }
+        );
+        allBlocks.push(...results);
+        cursor = next_cursor;
+      } while (cursor);
+      log(`✓ Found ${allBlocks.length} blocks to delete`);
 
-      for (const block of results) {
-        await this.notion.blocks.delete({
-          block_id: block.id,
-        });
+      // Step 3: Delete blocks sequentially
+      log("Deleting existing blocks...");
+      for (const block of allBlocks) {
+        try {
+          await retry(() =>
+            this.notion.blocks.delete({
+              block_id: block.id,
+            })
+          );
+          // Small delay between deletions
+          await wait(100);
+        } catch (error) {
+          if (isAPIResponseError(error)) {
+            log(`Failed to delete block ${block.id}: ${error.message}`);
+          }
+          throw error;
+        }
       }
+      log("✓ All blocks deleted");
 
-      await this.notion.blocks.children.append({
-        block_id: pageId,
-        children: [
-          {
-            object: "block" as const,
-            type: "heading_2" as const,
-            heading_2: {
-              rich_text: [{ text: { content: "Ingredients" } }],
-            },
-          } as BlockObjectRequest,
-          ...recipe.ingredients.map(
-            (ingredient): BlockObjectRequest => ({
+      // Step 4: Wait a moment before appending
+      await wait(500);
+
+      // Step 5: Append new blocks
+      log("Appending new blocks...");
+      await retry(() =>
+        this.notion.blocks.children.append({
+          block_id: pageId,
+          children: [
+            {
               object: "block" as const,
-              type: "bulleted_list_item" as const,
-              bulleted_list_item: {
-                rich_text: [{ text: { content: ingredient } }],
+              type: "heading_2" as const,
+              heading_2: {
+                rich_text: [{ text: { content: "Ingredients" } }],
               },
-            })
-          ),
-          {
-            object: "block" as const,
-            type: "heading_2" as const,
-            heading_2: {
-              rich_text: [{ text: { content: "Instructions" } }],
-            },
-          } as BlockObjectRequest,
-          ...recipe.instructions.map(
-            (instruction): BlockObjectRequest => ({
+            } as BlockObjectRequest,
+            ...recipe.ingredients.map(
+              (ingredient): BlockObjectRequest => ({
+                object: "block" as const,
+                type: "bulleted_list_item" as const,
+                bulleted_list_item: {
+                  rich_text: [{ text: { content: ingredient } }],
+                },
+              })
+            ),
+            {
               object: "block" as const,
-              type: "numbered_list_item" as const,
-              numbered_list_item: {
-                rich_text: [{ text: { content: instruction.text } }],
+              type: "heading_2" as const,
+              heading_2: {
+                rich_text: [{ text: { content: "Instructions" } }],
               },
-            })
-          ),
-          ...(recipe.notes
-            ? [
-                {
-                  object: "block" as const,
-                  type: "heading_2" as const,
-                  heading_2: {
-                    rich_text: [{ text: { content: "Notes" } }],
-                  },
-                } as BlockObjectRequest,
-                {
-                  object: "block" as const,
-                  type: "paragraph" as const,
-                  paragraph: {
-                    rich_text: [{ text: { content: recipe.notes } }],
-                  },
-                } as BlockObjectRequest,
-              ]
-            : []),
-          ...(recipe.description
-            ? [
-                {
-                  object: "block" as const,
-                  type: "paragraph" as const,
-                  paragraph: {
-                    rich_text: [{ text: { content: recipe.description } }],
-                  },
-                } as BlockObjectRequest,
-              ]
-            : []),
-        ],
-      });
+            } as BlockObjectRequest,
+            ...recipe.instructions.map(
+              (instruction): BlockObjectRequest => ({
+                object: "block" as const,
+                type: "numbered_list_item" as const,
+                numbered_list_item: {
+                  rich_text: [{ text: { content: instruction.text } }],
+                },
+              })
+            ),
+            ...(recipe.notes
+              ? [
+                  {
+                    object: "block" as const,
+                    type: "heading_2" as const,
+                    heading_2: {
+                      rich_text: [{ text: { content: "Notes" } }],
+                    },
+                  } as BlockObjectRequest,
+                  {
+                    object: "block" as const,
+                    type: "paragraph" as const,
+                    paragraph: {
+                      rich_text: [{ text: { content: recipe.notes } }],
+                    },
+                  } as BlockObjectRequest,
+                ]
+              : []),
+            ...(recipe.description
+              ? [
+                  {
+                    object: "block" as const,
+                    type: "paragraph" as const,
+                    paragraph: {
+                      rich_text: [{ text: { content: recipe.description } }],
+                    },
+                  } as BlockObjectRequest,
+                ]
+              : []),
+          ],
+        })
+      );
+      log("✓ New blocks appended");
     } catch (error) {
+      log(`❌ Update failed: ${error}`);
       if (isAPIResponseError(error)) {
+        const details = {
+          code: error.code,
+          status: error.status,
+          message: error.message,
+        };
+        log(`API Error details: ${JSON.stringify(details, null, 2)}`);
         throw new Error(`Failed to update recipe: ${error.message}`);
       }
-      throw error;
+      throw error instanceof Error
+        ? error
+        : new Error("An unknown error occurred");
     }
   }
 
@@ -348,24 +443,8 @@ export class NotionRecipeManager {
   private formatAdditionalInfo(recipe: Recipe): string {
     const parts: string[] = [];
 
-    if (recipe.totalTime) {
-      parts.push(`Total Time: ${recipe.totalTime}`);
-    }
-
-    if (recipe.category) {
-      parts.push(`Category: ${recipe.category}`);
-    }
-
-    if (recipe.keywords?.length) {
-      parts.push(`Keywords: ${recipe.keywords.join(", ")}`);
-    }
-
-    if (recipe.description) {
-      parts.push(`\nDescription: ${recipe.description}`);
-    }
-
     if (recipe.notes) {
-      parts.push(`\nNotes: ${recipe.notes}`);
+      parts.push(recipe.notes);
     }
 
     return parts.join("\n");

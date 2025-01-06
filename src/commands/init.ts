@@ -75,7 +75,6 @@ async function setupNotionDatabase(
         Description: { rich_text: {} },
         Keywords: { multi_select: {} },
         Category: { select: {} },
-        Type: { select: {} },
       };
       const response = await notion.databases.create({
         parent: { type: "page_id", page_id: specifiedPageId },
@@ -171,7 +170,6 @@ async function setupNotionDatabase(
       Description: { rich_text: {} },
       Keywords: { multi_select: {} },
       Category: { select: {} },
-      Type: { select: {} },
     };
     const response = await notion.databases.create({
       parent: { type: "page_id", page_id: pageAnswer.parentId },

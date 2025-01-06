@@ -55,6 +55,15 @@ export class RecipeSchemaProcessor implements SchemaProcessor {
     // Handle both direct recipe and @graph containing recipe
     const recipeData = this.extractRecipeData(schema);
 
+    // Take only the first category if multiple are provided
+    const category = this.extractText(recipeData.recipeCategory);
+    const keywords = this.extractKeywords(recipeData.keywords || []);
+
+    // If we have multiple categories, add the rest to keywords
+    if (recipeData.recipeCategory && Array.isArray(recipeData.recipeCategory)) {
+      keywords.push(...recipeData.recipeCategory.slice(1));
+    }
+
     return {
       name: this.extractText(recipeData.name) || "",
       ingredients: this.extractArray(recipeData.recipeIngredient),
@@ -66,8 +75,8 @@ export class RecipeSchemaProcessor implements SchemaProcessor {
       recipeYield: this.extractText(recipeData.recipeYield),
       notes: null,
       description: this.extractText(recipeData.description),
-      category: this.extractText(recipeData.recipeCategory),
-      keywords: this.extractKeywords(recipeData.keywords),
+      category: category, // Will be a single value or null
+      keywords: keywords, // Array of keywords including additional categories
       url: typeof recipeData.url === "string" ? recipeData.url : "",
       source: {
         url: typeof recipeData.url === "string" ? recipeData.url : "",

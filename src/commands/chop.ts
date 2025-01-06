@@ -119,6 +119,7 @@ export async function executeChop(
             // Check if recipe already exists
             const existingId = await notionManager.findRecipeByUrl(url);
             if (existingId) {
+              spinner.stop(); // Stop the spinner before showing prompt
               const { update } = await inquirer.prompt([
                 {
                   type: "confirm",
@@ -127,6 +128,7 @@ export async function executeChop(
                   default: false,
                 },
               ]);
+              spinner.start(); // Restart spinner after getting response
 
               if (!update) {
                 results.skipped.push({
