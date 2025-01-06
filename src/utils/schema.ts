@@ -17,7 +17,11 @@ type RecipeData = {
   cookTime?: string | string[];
   recipeYield?: string | string[];
   url?: string;
+  description?: string | string[];
+  author?: string | string[];
 };
+
+const DEBUG = process.env.DEBUG === "true";
 
 export class RecipeSchemaProcessor implements SchemaProcessor {
   validate(schema: unknown): boolean {
@@ -66,28 +70,47 @@ export class RecipeSchemaProcessor implements SchemaProcessor {
     const dom = new JSDOM(html);
     const { document } = dom.window;
 
-    // Extract JSON-LD
     const jsonLdScripts = document.querySelectorAll(
       'script[type="application/ld+json"]'
     );
+
     const schemas: Array<WithContext<SchemaRecipe>> = [];
+    const recipeSchemas: Array<{
+      schema: WithContext<SchemaRecipe>;
+      score: number;
+    }> = [];
 
     jsonLdScripts.forEach((script) => {
       try {
         const data = JSON.parse(script.textContent || "");
+
         if (this.isSchemaRecipe(data)) {
-          schemas.push(data);
+          // Score the recipe schema based on completeness
+          const score = this.scoreRecipeSchema(data);
+          recipeSchemas.push({ schema: data, score });
         }
       } catch (error) {
-        // Skip invalid JSON
+        if (DEBUG) {
+          console.log("Error parsing JSON-LD script:", error);
+        }
       }
     });
+
+    // Sort by score and take the most complete recipe schema
+    if (recipeSchemas.length > 0) {
+      recipeSchemas.sort((a, b) => b.score - a.score);
+      schemas.push(recipeSchemas[0].schema);
+    }
 
     if (schemas.length === 0) {
       throw new SchemaValidationError(
         "No valid recipe schema found",
         SchemaErrorType.NO_SCHEMA_FOUND,
-        { url: document.URL }
+        {
+          url: document.URL,
+          htmlLength: html.length,
+          jsonLdCount: jsonLdScripts.length,
+        }
       );
     }
 
@@ -97,22 +120,36 @@ export class RecipeSchemaProcessor implements SchemaProcessor {
   private isSchemaRecipe(data: unknown): data is WithContext<SchemaRecipe> {
     if (!data || typeof data !== "object") return false;
 
-    // Check if it's a WithContext type
-    if (!("@context" in data && data["@context"] === "https://schema.org")) {
+    // Check if it's a WithContext type with schema.org context
+    if (
+      !(
+        "@context" in data &&
+        (data["@context"] === "https://schema.org" ||
+          data["@context"] === "http://schema.org")
+      )
+    ) {
       return false;
     }
 
     // Handle both direct recipe and @graph containing recipe
     const recipeData = this.extractRecipeData(data as WithContext<Thing>);
 
-    return (
+    // Check if it's a Recipe type and has required fields
+    const isRecipe =
       recipeData &&
       "@type" in recipeData &&
       (typeof recipeData["@type"] === "string"
         ? recipeData["@type"] === "Recipe"
         : Array.isArray(recipeData["@type"]) &&
-          recipeData["@type"].includes("Recipe"))
-    );
+          recipeData["@type"].includes("Recipe"));
+
+    // Require at least name and either ingredients or instructions
+    const hasRequiredFields =
+      recipeData &&
+      "name" in recipeData &&
+      ("recipeIngredient" in recipeData || "recipeInstructions" in recipeData);
+
+    return isRecipe && hasRequiredFields;
   }
 
   private extractRecipeData(schema: WithContext<Thing>): RecipeData {
@@ -166,5 +203,33 @@ export class RecipeSchemaProcessor implements SchemaProcessor {
     }
 
     return [{ text: String(value) }];
+  }
+
+  private scoreRecipeSchema(schema: WithContext<SchemaRecipe>): number {
+    const recipeData = this.extractRecipeData(schema);
+    let score = 0;
+
+    // Core fields
+    if (recipeData.name) score += 10;
+    if (recipeData.recipeIngredient) score += 10;
+    if (recipeData.recipeInstructions) score += 10;
+
+    // Additional fields
+    if (recipeData.recipeCuisine) score += 2;
+    if (recipeData.prepTime) score += 2;
+    if (recipeData.cookTime) score += 2;
+    if (recipeData.recipeYield) score += 2;
+    if (recipeData.description) score += 1;
+    if (recipeData.author) score += 1;
+
+    // Score based on completeness of arrays
+    if (Array.isArray(recipeData.recipeIngredient)) {
+      score += Math.min(recipeData.recipeIngredient.length, 5);
+    }
+    if (Array.isArray(recipeData.recipeInstructions)) {
+      score += Math.min(recipeData.recipeInstructions.length, 5);
+    }
+
+    return score;
   }
 }

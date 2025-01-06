@@ -7,6 +7,9 @@ import { ConfigManager } from "../managers/config.js";
 import { RecipeSchemaProcessor } from "../utils/schema.js";
 import fs from "fs/promises";
 import inquirer from "inquirer";
+import puppeteer from "puppeteer";
+import { JSDOM } from "jsdom";
+import { Recipe as SchemaRecipe, WithContext } from "schema-dts";
 
 export interface ChopOptions {
   url?: string;
@@ -16,6 +19,60 @@ export interface ChopOptions {
   validateOnly?: boolean;
   batchSize?: number;
   tags?: string[];
+}
+
+function hasRecipeSchema(container: Document): boolean {
+  const schemas = container.querySelectorAll(
+    'script[type="application/ld+json"]'
+  ) as NodeListOf<HTMLScriptElement>;
+  return Array.from(schemas).some((schema) => {
+    try {
+      const content = JSON.parse(schema.textContent || "{}");
+      return content["@type"]?.includes("Recipe");
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function fetchPageContent(url: string): Promise<string> {
+  // Try simple fetch first
+  try {
+    console.log("  Fetching URL:", url);
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`  Failed to fetch URL: ${response.statusText}`);
+    }
+    const html = await response.text();
+
+    // Check if we found a recipe schema
+    const dom = new JSDOM(html);
+    if (hasRecipeSchema(dom.window.document)) {
+      console.log("  Recipe schema found in initial HTML");
+      return html;
+    }
+    console.log(
+      "  recipe schema found in initial HTML, falling back to puppeteer..."
+    );
+  } catch (error) {
+    console.log("  Simple fetch failed, falling back to puppeteer...");
+  }
+
+  // Fall back to puppeteer if simple fetch didn't work
+  const browser = await puppeteer.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: "networkidle0" });
+
+    await page.waitForFunction(
+      hasRecipeSchema.toString() + `;hasRecipeSchema(document);`,
+      { timeout: 10000 }
+    );
+
+    return await page.content();
+  } finally {
+    await browser.close();
+  }
 }
 
 export async function executeChop(
@@ -81,12 +138,16 @@ export async function executeChop(
             }
 
             // Fetch and process recipe
-            const response = await fetch(url);
-            if (!response.ok) {
-              throw new Error(`Failed to fetch URL: ${response.statusText}`);
-            }
-            const html = await response.text();
-            const schemas = schemaProcessor.extractFromHtml(html);
+            spinner.stop(); // Stop spinner temporarily for debug output
+            console.log(`\n📥 Processing URL: ${url}`);
+
+            let schemas: Array<WithContext<SchemaRecipe>> = [];
+
+            const html = await fetchPageContent(url);
+            console.log(`✓ Fetched HTML (${html.length} bytes)`);
+
+            schemas = schemaProcessor.extractFromHtml(html);
+            console.log(`✓ Found ${schemas.length} recipe schemas`);
 
             if (options.validateOnly) {
               results.successful.push({ url, recipeId: "validated" });
@@ -121,6 +182,8 @@ export async function executeChop(
               url,
               error: error instanceof Error ? error.message : String(error),
             });
+          } finally {
+            spinner.start(); // Restart spinner after debug output
           }
         })
       );

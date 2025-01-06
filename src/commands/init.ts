@@ -7,10 +7,50 @@ import { Config } from "../types/config.js";
 import { ConfigManager } from "../managers/config.js";
 import { isNotionAPIResponseError } from "../utils/notion.js";
 
-async function setupNotionDatabase(auth: string): Promise<string> {
+async function setupNotionDatabase(
+  auth: string,
+  specifiedPageId?: string
+): Promise<string> {
   const spinner = ora("Fetching pages").start();
   try {
     const notion = new Client({ auth });
+
+    // If a specific page ID is provided, use it directly
+    if (specifiedPageId) {
+      const dbSpinner = ora("Creating database").start();
+      const response = await notion.databases.create({
+        parent: { type: "page_id", page_id: specifiedPageId },
+        title: [{ type: "text", text: { content: "Recipe Database" } }],
+        properties: {
+          Name: { title: {} },
+          URL: { url: {} },
+          "Cuisine Type": {
+            select: {
+              options: [
+                { name: "Italian", color: "blue" },
+                { name: "Chinese", color: "red" },
+                { name: "Japanese", color: "purple" },
+              ],
+            },
+          },
+          Tags: {
+            multi_select: {
+              options: [
+                { name: "Dinner", color: "yellow" },
+                { name: "Quick", color: "green" },
+                { name: "Vegetarian", color: "orange" },
+              ],
+            },
+          },
+          "Prep Time": { number: {} },
+          "Cook Time": { number: {} },
+          Servings: { rich_text: {} },
+        },
+      });
+      dbSpinner.succeed(`Created database: ${response.id}`);
+      return response.id;
+    }
+
     const { results } = await notion.search({
       filter: { property: "object", value: "page" },
       page_size: 100,
@@ -19,15 +59,17 @@ async function setupNotionDatabase(auth: string): Promise<string> {
     spinner.stop();
 
     if (results.length === 0) {
-      const pageResponse = await notion.pages.create({
-        parent: { page_id: "workspace" },
-        properties: {
-          title: {
-            title: [{ type: "text", text: { content: "Recipes" } }],
-          },
-        },
-      });
-      results.push(pageResponse);
+      spinner.fail(
+        "No pages found. Please make sure to:\n" +
+          "1. Create a page in Notion\n" +
+          "2. Share the page with your integration:\n" +
+          "   - Go to the page in Notion\n" +
+          "   - Click '...' menu in the top right\n" +
+          "   - Select 'Add connections'\n" +
+          "   - Find and select your integration\n" +
+          "Try running 'parsely init' again after sharing the page."
+      );
+      throw new Error("No pages found - integration needs page access");
     }
 
     const pageChoices = [
@@ -49,37 +91,20 @@ async function setupNotionDatabase(auth: string): Promise<string> {
           value: page.id,
         };
       }),
-      { name: '+ Create new "Recipes" page', value: "new" },
     ];
 
     const pageAnswer = await inquirer.prompt([
       {
         type: "list",
         name: "parentId",
-        message: "Where to create database?",
+        message: "Select page to create database in:",
         choices: pageChoices,
       },
     ]);
 
-    let parentId = pageAnswer.parentId;
-
-    if (parentId === "new") {
-      const createSpinner = ora("Creating page").start();
-      const pageResponse = await notion.pages.create({
-        parent: { page_id: "workspace" },
-        properties: {
-          title: {
-            title: [{ type: "text", text: { content: "Recipes" } }],
-          },
-        },
-      });
-      parentId = pageResponse.id;
-      createSpinner.succeed("Created page");
-    }
-
     const dbSpinner = ora("Creating database").start();
     const response = await notion.databases.create({
-      parent: { type: "page_id", page_id: parentId },
+      parent: { type: "page_id", page_id: pageAnswer.parentId },
       title: [{ type: "text", text: { content: "Recipe Database" } }],
       properties: {
         Name: { title: {} },
@@ -129,17 +154,28 @@ export async function executeInit(): Promise<void> {
       validate: (input) => input.length > 0,
     },
     {
-      type: "confirm",
-      name: "createNew",
-      message: "Create new recipe database?",
-      default: true,
+      type: "list",
+      name: "dbSetup",
+      message: "How would you like to setup the database?",
+      choices: [
+        { name: "Interactive selection", value: "interactive" },
+        { name: "Specify page ID", value: "specify" },
+        { name: "Use existing database", value: "existing" },
+      ],
+    },
+    {
+      type: "input",
+      name: "pageId",
+      message: "Page ID to create database in:",
+      validate: (input) => input.length > 0,
+      when: (answers) => answers.dbSetup === "specify",
     },
     {
       type: "input",
       name: "databaseId",
       message: "Existing database ID:",
       validate: (input) => input.length > 0,
-      when: (answers) => !answers.createNew,
+      when: (answers) => answers.dbSetup === "existing",
     },
     {
       type: "input",
@@ -164,8 +200,8 @@ export async function executeInit(): Promise<void> {
   ]);
 
   let databaseId = answers.databaseId;
-  if (answers.createNew) {
-    databaseId = await setupNotionDatabase(answers.auth);
+  if (answers.dbSetup === "interactive" || answers.dbSetup === "specify") {
+    databaseId = await setupNotionDatabase(answers.auth, answers.pageId);
   }
 
   const config: Config = {
