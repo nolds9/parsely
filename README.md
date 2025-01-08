@@ -1,4 +1,4 @@
-# Parsely
+# Parsely 🍃
 
 A CLI tool for importing recipes to Notion. Supports web scraping and photo imports.
 

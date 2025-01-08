@@ -55,14 +55,23 @@ export class RecipeSchemaProcessor implements SchemaProcessor {
     // Handle both direct recipe and @graph containing recipe
     const recipeData = this.extractRecipeData(schema);
 
-    // Take only the first category if multiple are provided
-    const category = this.extractText(recipeData.recipeCategory);
-    const keywords = this.extractKeywords(recipeData.keywords || []);
+    // Split and clean category strings, handling commas within categories
+    const rawCategories = this.extractArray(recipeData.recipeCategory);
+    const categories = rawCategories
+      .flatMap((cat) => cat.split(/[,;]/)) // Split any categories that contain commas
+      .map((cat) => cat.trim())
+      .filter(Boolean);
 
-    // If we have multiple categories, add the rest to keywords
-    if (recipeData.recipeCategory && Array.isArray(recipeData.recipeCategory)) {
-      keywords.push(...recipeData.recipeCategory.slice(1));
-    }
+    // Use first category as primary, rest go to keywords
+    const rawKeywords = this.extractKeywords(recipeData.keywords || []);
+    const allKeywords = [
+      ...rawKeywords,
+      ...categories.slice(1), // Additional categories become keywords
+    ]
+      .flatMap((k) => k.split(/[,;]/)) // Split any keywords that contain commas
+      .map((k) => k.trim())
+      .filter(Boolean)
+      .filter((k) => k !== categories[0]); // Remove duplicates of primary category
 
     return {
       name: this.extractText(recipeData.name) || "",
@@ -75,8 +84,8 @@ export class RecipeSchemaProcessor implements SchemaProcessor {
       recipeYield: this.extractText(recipeData.recipeYield),
       notes: null,
       description: this.extractText(recipeData.description),
-      category: category, // Will be a single value or null
-      keywords: keywords, // Array of keywords including additional categories
+      category: categories[0] || null, // Only use first category
+      keywords: Array.from(new Set(allKeywords)), // Remove duplicates
       url: typeof recipeData.url === "string" ? recipeData.url : "",
       source: {
         url: typeof recipeData.url === "string" ? recipeData.url : "",
@@ -255,11 +264,11 @@ export class RecipeSchemaProcessor implements SchemaProcessor {
     return score;
   }
 
-  private extractKeywords(value: string | string[] | undefined): string[] {
+  private extractKeywords(value: string | string[]): string[] {
     if (!value) return [];
-    if (typeof value === "string") {
-      return value.split(/,\s*/);
-    }
-    return Array.isArray(value) ? value : [];
+    const keywords = Array.isArray(value)
+      ? value.flatMap((v) => v.split(/[,;]/)) // Split any values that contain commas
+      : value.split(/[,;]/);
+    return keywords.map((k) => k.trim()).filter(Boolean);
   }
 }

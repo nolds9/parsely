@@ -200,18 +200,10 @@ export class NotionRecipeManager {
                 ...(recipe.keywords?.map((keyword) => ({
                   name: keyword.trim(),
                 })) || []),
-                ...(recipe.category
-                  ? recipe.category
-                      .split(",")
-                      .slice(1)
-                      .map((cat) => ({ name: cat.trim() }))
-                  : []),
               ],
             },
             Category: {
-              select: recipe.category
-                ? { name: recipe.category.split(",")[0].trim() }
-                : null,
+              select: recipe.category ? { name: recipe.category.trim() } : null,
             },
           },
         })
